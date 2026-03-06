@@ -185,11 +185,7 @@
     const layers = [];
     while (skuList.some(s => remaining[s.sku.id] > 0)) {
       const active = skuList.filter(s => remaining[s.sku.id] > 0);
-      active.sort((a,b) => {
-        const wA = Math.min(remaining[a.sku.id], a.cpl) * a.sku.weight;
-        const wB = Math.min(remaining[b.sku.id], b.cpl) * b.sku.weight;
-        return wB - wA;
-      });
+      active.sort((a,b) => (b.sku.L * b.sku.W) - (a.sku.L * a.sku.W));
       const layerSlots = [];
       let usedRects = [];
       let skusOnLayer = 0;
@@ -632,24 +628,28 @@
           const isOH = slot.pattern && (slot.pattern.ohL > 0 || slot.pattern.ohW > 0);
 
           slot.rects.forEach(r => {
-            const cL = r.w * INCH - GAP;
-            const cW = r.h * INCH - GAP;
-            const cH = sku.H * INCH - GAP;
+            const GAP_ACTIVE = GAP;
+            const inset = isActiveLayer ? 0 : 0.008; // slight inset on inactive so layers read as separate
+            const cL = r.w * INCH - GAP_ACTIVE - inset;
+            const cW = r.h * INCH - GAP_ACTIVE - inset;
+            const cH = sku.H * INCH - GAP_ACTIVE;
 
             const geo = new THREE.BoxGeometry(cL, cH, cW);
 
-            // Active layer = full brightness; others = dimmed
-            const dimFactor = isActiveLayer ? 1.0 : 0.28;
+            // Active layer = full brightness; others = darkened but fully opaque (no ghosting through)
             const col = new THREE.Color(isOH ? 0xf59e0b : baseColor);
-            col.multiplyScalar(dimFactor);
+            if (!isActiveLayer) {
+              // Blend toward the background dark blue to make inactive layers recede
+              col.multiplyScalar(0.18).lerp(new THREE.Color(0x1a2340), 0.6);
+            }
 
             const mat = new THREE.MeshStandardMaterial({
               color: col,
-              roughness: isActiveLayer ? 0.55 : 0.9,
-              metalness: isActiveLayer ? 0.05 : 0,
+              roughness: isActiveLayer ? 0.55 : 0.95,
+              metalness: 0,
               emissive: isActiveLayer ? new THREE.Color(isOH ? 0xf59e0b : baseColor).multiplyScalar(0.08) : new THREE.Color(0x000000),
-              transparent: !isActiveLayer,
-              opacity: isActiveLayer ? 1.0 : 0.45,
+              transparent: false,
+              depthWrite: true,
             });
 
             const mesh = new THREE.Mesh(geo, mat);
