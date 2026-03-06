@@ -179,7 +179,7 @@
       totalFraction += qty / sku.cpp;
       cargoWeight   += qty * sku.weight;
       totalCartons  += qty;
-      maxStackH = Math.max(maxStackH, Math.ceil(qty/cpl) * sku.H);
+      maxStackH += Math.ceil(qty/cpl) * sku.H;
       if (pattern) {
         effectiveL = Math.max(effectiveL, PL + pattern.ohL);
         effectiveW = Math.max(effectiveW, PW + pattern.ohW);
