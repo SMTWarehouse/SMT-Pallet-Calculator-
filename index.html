@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SMT Pallet Calculator</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; }
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+    input[type=number] { -moz-appearance: textfield; }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: #f0f2f7; }
+    ::-webkit-scrollbar-thumb { background: #c5cfe0; border-radius: 10px; }
+    body { font-family: 'DM Sans', sans-serif; background: #eef1f8; color: #1a2340; }
+    @keyframes fadeUp { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+    @keyframes slideDown { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+  const { useState, useMemo } = React;
+
+  // SHIPPING CONSTRAINTS
+  const CONSTRAINTS = {
+    MAX_HEIGHT:        65,
+    WARN_HEIGHT:       60,
+    MAX_OVERHANG:       3,
+    MAX_GROSS_WEIGHT: 2500,
+    WARN_GROSS_WEIGHT:2200,
+    MIN_CPL:            2,
+    MIN_COVERAGE:      0.35,
+    MAX_LAYERS:        10,
+  };
+
+  const PALLET_WEIGHT = 40;
+  const PL = 48;
+  const PW = 40;
+
+  const PALLET_TYPES = [
+    { id:"block",    label:"Block Pallet",    height:6 },
+    { id:"standard", label:"Standard Pallet", height:4 },
+  ];
+
+  // UPDATED SKU DATA - confirmed carton dims
+  const SKU_DATA = [
+    { id:1, item:"Vinyl Q-Top",    size:"24x4",     L:32,    W:8,     H:8.25, weight:49, cpp:30 },
+    { id:2, item:"Vinyl Q-Top",    size:"24x6",     L:32,    W:9.25,  H:7.25, weight:56, cpp:30 },
+    { id:3, item:"Vinyl Q-Top",    size:"24x8",     L:32,    W:10.25, H:6,    weight:55, cpp:30 },
+    { id:4, item:"Vinyl Q-Top",    size:"30x4",     L:38,    W:8,     H:9,    weight:62, cpp:30 },
+    { id:5, item:"Vinyl Q-Top",    size:"30x6",     L:38,    W:9,     H:6.75, weight:64, cpp:30 },
+    { id:6, item:"Vinyl Q-Top",    size:"30x8",     L:38,    W:11,    H:6,    weight:65, cpp:30 },
+    { id:7, item:"Fabric D-Skirt", size:"30in Skirt", L:33.25, W:18.25, H:9.5, weight:52, cpp:12 },
+    { id:8, item:"Fabric D-Skirt", size:"40in Skirt", L:43.25, W:18.25, H:9.5, weight:64, cpp:12 },
+    { id:9, item:"D-Pails",        size:"Pails",    L:20,    W:16.5,  H:21.5, weight:48, cpp:12 },
+  ];
+
+  const ACCENT = {
+    "Vinyl Q-Top":    { primary:"#1782f5", light:"#e8f2ff", mid:"#b8d8ff" },
+    "Fabric D-Skirt": { primary:"#7c4dbd", light:"#f0ebff", mid:"#cdb8f0" },
+    "D-Pails":        { primary:"#e07b0a", light:"#fff4e5", mid:"#fcd49a" },
+  };
+
+  // PATTERN ENGINE
+  function generatePatterns(sku) {
+    const patterns = [];
+    const seenFp = new Set();
+
+    function addPattern(label, rects, tag, forceAdd) {
+      if (!rects.length) return;
+      const ohL = parseFloat(Math.max(0, Math.max(...rects.map(r => r.x + r.w)) - PL).toFixed(2));
+      const ohW = parseFloat(Math.max(0, Math.max(...rects.map(r => r.y + r.h)) - PW).toFixed(2));
+      if (!forceAdd) {
+        if (ohL > CONSTRAINTS.MAX_OVERHANG) return;
+        if (ohW > CONSTRAINTS.MAX_OVERHANG) return;
+        if (rects.length < CONSTRAINTS.MIN_CPL) return;
+        const coverage = (rects.length * sku.L * sku.W) / (PL * PW);
+        if (coverage < CONSTRAINTS.MIN_COVERAGE) return;
+      }
+      const fp = rects.length + "|" + ohL.toFixed(2) + "|" + ohW.toFixed(2);
+      if (seenFp.has(fp)) return;
+      seenFp.add(fp);
+      patterns.push({ id:tag, label, cpl:rects.length, rects, ohL, ohW, aligned:ohL===0&&ohW===0 });
+    }
+
+    if (sku.item === "Vinyl Q-Top") {
+      // Confirmed physical layout: 4 vertical + 1 horizontal tucked
+      const tucked = [];
+      for (let i = 0; i < 4; i++) tucked.push({ x:0, y:i*sku.W, w:sku.L, h:sku.W });
+      tucked.push({ x:sku.L, y:0, w:sku.W, h:sku.L, tucked:true });
+      addPattern("4V + 1H Tucked", tucked, "confirmed", true);
+
+      // 4 vertical only
+      const v4 = [];
+      for (let i = 0; i < 4; i++) v4.push({ x:0, y:i*sku.W, w:sku.L, h:sku.W });
+      addPattern("4 Vertical", v4, "4v", true);
+
+      // Grid variants
+      for (let rot = 0; rot < 2; rot++) {
+        const cw = rot ? sku.W : sku.L;
+        const ch = rot ? sku.L : sku.W;
+        for (let cols = 1; cols <= Math.ceil(PL/cw)+1; cols++) {
+          for (let rows = 1; rows <= Math.ceil(PW/ch)+1; rows++) {
+            const rects = [];
+            for (let c = 0; c < cols; c++)
+              for (let r = 0; r < rows; r++)
+                rects.push({ x:c*cw, y:r*ch, w:cw, h:ch });
+            addPattern(cols+"x"+rows+(rot?" rot":""), rects, "g"+cols+"x"+rows+(rot?"r":""), false);
+          }
+        }
+      }
+    } else {
+      for (let rot = 0; rot < 2; rot++) {
+        const cw = rot ? sku.W : sku.L;
+        const ch = rot ? sku.L : sku.W;
+        for (let cols = 1; cols <= Math.ceil(PL/cw)+1; cols++) {
+          for (let rows = 1; rows <= Math.ceil(PW/ch)+1; rows++) {
+            const rects = [];
+            for (let c = 0; c < cols; c++)
+              for (let r = 0; r < rows; r++)
+                rects.push({ x:c*cw, y:r*ch, w:cw, h:ch });
+            addPattern(cols+"x"+rows+(rot?" rot":""), rects, "g"+cols+"x"+rows+(rot?"r":""), false);
+          }
+        }
+      }
+    }
+
+    patterns.sort((a, b) => {
+      if (a.id === "confirmed") return -1;
+      if (b.id === "confirmed") return 1;
+      if (b.cpl !== a.cpl) return b.cpl - a.cpl;
+      return (a.ohL + a.ohW) - (b.ohL + b.ohW);
+    });
+
+    return patterns;
+  }
+
+  // BUILD LAYERS
+  function buildLayers(qtys, selectedPatterns) {
+    const out = [];
+    SKU_DATA.forEach(sku => {
+      const qty = qtys[sku.id] || 0;
+      if (!qty) return;
+      const all = generatePatterns(sku);
+      const pattern = all.find(p => p.id === selectedPatterns[sku.id]) || all[0];
+      const cpl = pattern ? pattern.cpl : 1;
+      const n = Math.ceil(qty / cpl);
+      for (let i = 0; i < n; i++) {
+        const c = i < n-1 ? cpl : qty - i*cpl;
+        out.push({ sku, cartonsThisLayer:c, layerIndex:i, pattern });
+      }
+    });
+    return out;
+  }
+
+  function getRectsForLayer(entry) {
+    if (!entry.pattern) return [];
+    return entry.pattern.rects.slice(0, entry.cartonsThisLayer);
+  }
+
+  // CALCULATE
+  function calculate(qtys, palletType, selectedPatterns) {
+    let totalFraction=0, cargoWeight=0, totalCartons=0, maxStackH=0;
+    let effectiveL=PL, effectiveW=PW;
+    const overhangItems = [];
+
+    SKU_DATA.forEach(sku => {
+      const qty = qtys[sku.id] || 0;
+      if (!qty) return;
+      const all = generatePatterns(sku);
+      const pattern = all.find(p => p.id === selectedPatterns[sku.id]) || all[0];
+      const cpl = pattern ? pattern.cpl : 1;
+      totalFraction += qty / sku.cpp;
+      cargoWeight   += qty * sku.weight;
+      totalCartons  += qty;
+      maxStackH = Math.max(maxStackH, Math.ceil(qty/cpl) * sku.H);
+      if (pattern) {
+        effectiveL = Math.max(effectiveL, PL + pattern.ohL);
+        effectiveW = Math.max(effectiveW, PW + pattern.ohW);
+        if (pattern.ohL > 0 || pattern.ohW > 0) overhangItems.push({ sku, pattern });
+      }
+    });
+
+    const pallets     = Math.ceil(totalFraction);
+    const totalH      = parseFloat((palletType.height + maxStackH).toFixed(2));
+    const grossWeight = Math.round(cargoWeight + pallets * PALLET_WEIGHT);
+    const fillPct     = pallets > 0 ? Math.min(1, totalFraction / pallets) : 0;
+
+    return {
+      pallets, totalH, stackH:maxStackH, fillPct, totalCartons,
+      cargoWeight: Math.round(cargoWeight), grossWeight,
+      effectiveL: parseFloat(effectiveL.toFixed(2)),
+      effectiveW: parseFloat(effectiveW.toFixed(2)),
+      palletDeckH: palletType.height,
+      overhangItems, hasOverhang: overhangItems.length > 0,
+    };
+  }
+
+  // WARNINGS
+  function getWarnings(res, layers) {
+    const w = [];
+    if (res.totalH > CONSTRAINTS.MAX_HEIGHT)
+      w.push({ level:"error", msg:"Height " + res.totalH + '" exceeds the ' + CONSTRAINTS.MAX_HEIGHT + '" carrier limit. Reduce layers or split the pallet.' });
+    else if (res.totalH > CONSTRAINTS.WARN_HEIGHT)
+      w.push({ level:"warn", msg:"Height " + res.totalH + '" is approaching the ' + CONSTRAINTS.MAX_HEIGHT + '" limit.' });
+
+    if (res.grossWeight > CONSTRAINTS.MAX_GROSS_WEIGHT)
+      w.push({ level:"error", msg:"Gross weight " + res.grossWeight.toLocaleString() + " lb exceeds the " + CONSTRAINTS.MAX_GROSS_WEIGHT.toLocaleString() + " lb LTL limit." });
+    else if (res.grossWeight > CONSTRAINTS.WARN_GROSS_WEIGHT)
+      w.push({ level:"warn", msg:"Gross weight " + res.grossWeight.toLocaleString() + " lb is approaching the " + CONSTRAINTS.MAX_GROSS_WEIGHT.toLocaleString() + " lb LTL limit." });
+
+    res.overhangItems.forEach(function(oi) {
+      const parts = [];
+      if (oi.pattern.ohL > 0) parts.push(oi.pattern.ohL + '" on length');
+      if (oi.pattern.ohW > 0) parts.push(oi.pattern.ohW.toFixed(1) + '" on width');
+      w.push({ level:"info", msg:oi.sku.item + " " + oi.sku.size + " (" + oi.pattern.label + "): overhangs " + parts.join(" / ") });
+    });
+
+    const maxLayersBySku = {};
+    layers.forEach(function(l) {
+      maxLayersBySku[l.sku.id] = (maxLayersBySku[l.sku.id] || 0) + 1;
+    });
+    const maxL = Math.max(...Object.values(maxLayersBySku), 0);
+    if (maxL > CONSTRAINTS.MAX_LAYERS)
+      w.push({ level:"warn", msg:"Stack exceeds " + CONSTRAINTS.MAX_LAYERS + " layers. Consider splitting for stability." });
+
+    return w;
+  }
+
+  // MINI DIAGRAM
+  function MiniDiagram({ pattern, sku, size }) {
+    const ac = ACCENT[sku.item];
+    const maxX = Math.max(PL, ...pattern.rects.map(r => r.x + r.w));
+    const maxY = Math.max(PW, ...pattern.rects.map(r => r.y + r.h));
+    const s = (size - 6) / Math.max(maxX, maxY);
+    const pw = PL*s, ph = PW*s;
+    return (
+      <div style={{ position:"relative", width:size, height:size, flexShrink:0 }}>
+        <div style={{ position:"absolute", left:3, top:3, width:pw, height:ph, background:"#f0f3fa", border:"1.5px solid #d0d8ec", borderRadius:2 }} />
+        {pattern.rects.map((r, i) => {
+          const oh = (r.x + r.w > PL) || (r.y + r.h > PW);
+          return (
+            <div key={i} style={{
+              position:"absolute",
+              left:3 + r.x*s, top:3 + r.y*s,
+              width:r.w*s, height:r.h*s,
+              background: oh ? "#fff3cd" : ac.light,
+              border:"1.5px " + (r.tucked ? "dashed" : "solid") + " " + (oh ? "#f5a623" : ac.primary),
+              borderRadius:1,
+            }} />
+          );
+        })}
+        {pattern.id === "confirmed" && (
+          <div style={{ position:"absolute", top:2, right:2, width:7, height:7, borderRadius:"50%", background:"#1a9e6a" }} />
+        )}
+      </div>
+    );
+  }
+
+  // PATTERN SELECTOR
+  function PatternSelector({ sku, selectedPatternId, onSelect, showOverhang }) {
+    const ac = ACCENT[sku.item];
+    const all = useMemo(() => generatePatterns(sku), [sku.id]);
+    const visible = showOverhang ? all : all.filter(p => p.aligned);
+
+    if (!visible.length) return (
+      <div style={{ padding:"10px 14px", background:"#f8f9fd", borderTop:"1px solid " + ac.mid, fontSize:11, color:"#8fa0bc", fontStyle:"italic", animation:"slideDown 0.2s ease" }}>
+        No aligned patterns available for this SKU. Switch to Overhang mode to see options.
+      </div>
+    );
+
+    return (
+      <div style={{ padding:"10px 14px 14px", background:"#f8f9fd", borderTop:"1px solid " + ac.mid, animation:"slideDown 0.2s ease" }}>
+        <div style={{ fontSize:10, fontWeight:600, color:"#8fa0bc", letterSpacing:"0.1em", marginBottom:10 }}>LAYER PATTERN</div>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+          {visible.map(p => {
+            const isSel = p.id === selectedPatternId;
+            return (
+              <button key={p.id} onClick={() => onSelect(sku.id, p.id)} style={{
+                display:"flex", flexDirection:"column", alignItems:"center", gap:5,
+                padding:"8px 9px", borderRadius:10, cursor:"pointer", fontFamily:"inherit",
+                background: isSel ? ac.light : "#fff",
+                border:"2px solid " + (isSel ? ac.primary : "#e0e5f0"),
+                boxShadow: isSel ? "0 2px 10px " + ac.primary + "30" : "none",
+                transition:"all 0.15s", minWidth:74,
+              }}>
+                <MiniDiagram pattern={p} sku={sku} size={68} />
+                <div style={{ fontSize:9, fontWeight:700, color:isSel ? ac.primary : "#1a2340", textAlign:"center", lineHeight:1.3, maxWidth:78 }}>{p.label}</div>
+                <div style={{ fontSize:9, color:isSel ? ac.primary : "#5a6a88" }}>{p.cpl}/layer</div>
+                {(p.ohL > 0 || p.ohW > 0) ? (
+                  <span style={{ fontSize:8, color:"#d4820a", fontWeight:600, textAlign:"center" }}>
+                    {p.ohL > 0 ? "+" + p.ohL + '"L ' : ""}{p.ohW > 0 ? "+" + p.ohW.toFixed(1) + '"W' : ""}
+                  </span>
+                ) : (
+                  <span style={{ fontSize:8, color:"#1a9e6a", fontWeight:600 }}>Aligned</span>
+                )}
+                {isSel && <div style={{ width:5, height:5, borderRadius:3, background:ac.primary }} />}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // SIDE ELEVATION
+  function SideElevation({ layers, activeLayer, res, palletType, onLayerClick }) {
+    const W = 220, H = 110;
+    const scX = (W - 44) / PL;
+    const scY = (H - 10) / Math.max(res.totalH, CONSTRAINTS.MAX_HEIGHT);
+    const pxW = PL * scX;
+    let curY = 0;
+    const items = [];
+
+    items.push(
+      <div key="cap" style={{ position:"absolute", bottom:CONSTRAINTS.MAX_HEIGHT*scY, left:0, width:pxW+50, height:0, borderTop:"1.5px dashed #ef444466" }}>
+        <span style={{ position:"absolute", right:0, top:-8, fontSize:7, color:"#ef4444", fontWeight:700, whiteSpace:"nowrap" }}>{CONSTRAINTS.MAX_HEIGHT}" MAX</span>
+      </div>
+    );
+    items.push(
+      <div key="warn" style={{ position:"absolute", bottom:CONSTRAINTS.WARN_HEIGHT*scY, left:0, width:pxW+50, height:0, borderTop:"1px dashed #f5a62344" }}>
+        <span style={{ position:"absolute", right:0, top:-7, fontSize:7, color:"#f5a623", whiteSpace:"nowrap" }}>{CONSTRAINTS.WARN_HEIGHT}"</span>
+      </div>
+    );
+    items.push(
+      <div key="deck" style={{ position:"absolute", bottom:0, left:0, width:pxW, height:palletType.height*scY, background:"#c9a55a", borderRadius:"0 0 2px 2px", display:"flex", alignItems:"center", justifyContent:"center" }}>
+        <span style={{ fontSize:8, color:"#fff", fontWeight:600 }}>{palletType.height}"</span>
+      </div>
+    );
+    curY += palletType.height;
+
+    layers.forEach((l, i) => {
+      const lh = l.sku.H * scY;
+      const ac = ACCENT[l.sku.item];
+      const isActive = i === Math.min(activeLayer, layers.length - 1);
+      items.push(
+        <div key={i} onClick={() => onLayerClick(i)} style={{
+          position:"absolute", bottom:curY*scY, left:0, width:pxW, height:lh,
+          background: isActive ? ac.light : ac.primary + "18",
+          border:"1.5px solid " + (isActive ? ac.primary : ac.primary + "66"),
+          cursor:"pointer", borderRadius:1,
+          display:"flex", alignItems:"center", justifyContent:"center", transition:"background 0.15s",
+        }}>
+          <span style={{ fontSize:7, color:ac.primary, fontWeight:isActive ? 700 : 500 }}>L{i+1} {l.sku.H}"</span>
+        </div>
+      );
+      items.push(
+        <div key={"t"+i} style={{ position:"absolute", bottom:(curY+l.sku.H)*scY-7, left:pxW+4, fontSize:8, color:isActive ? ac.primary : "#8fa0bc" }}>
+          {parseFloat((curY + l.sku.H + palletType.height).toFixed(1))}"
+        </div>
+      );
+      curY += l.sku.H;
+    });
+
+    items.push(<div key="gnd" style={{ position:"absolute", bottom:0, left:0, width:pxW+36, height:2, background:"#d0d8ec" }} />);
+    const hColor = res.totalH > CONSTRAINTS.MAX_HEIGHT ? "#ef4444" : res.totalH > CONSTRAINTS.WARN_HEIGHT ? "#f5a623" : "#1782f5";
+    items.push(
+      <div key="total" style={{ position:"absolute", bottom:curY*scY-8, left:pxW+4, fontSize:10, color:hColor, fontWeight:700 }}>{res.totalH}"</div>
+    );
+
+    return <div style={{ position:"relative", width:W, height:H }}>{items}</div>;
+  }
+
+  // WARNING BANNER
+  function WarningBanner({ warnings }) {
+    if (!warnings.length) return null;
+    const colors = {
+      error:{ bg:"#fef2f2", border:"#fca5a5", text:"#dc2626", icon:"X" },
+      warn: { bg:"#fffbeb", border:"#fcd49a", text:"#d97706", icon:"!" },
+      info: { bg:"#eff6ff", border:"#bfdbfe", text:"#2563eb", icon:"i" },
+    };
+    return (
+      <div style={{ display:"flex", flexDirection:"column", gap:5, padding:"8px 24px", borderBottom:"1px solid #e8edf6" }}>
+        {warnings.map((w, i) => {
+          const c = colors[w.level];
+          return (
+            <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:7, padding:"6px 10px", background:c.bg, border:"1px solid " + c.border, borderRadius:8, fontSize:11, color:c.text, fontWeight:500, lineHeight:1.4 }}>
+              <span style={{ flexShrink:0, width:14, height:14, borderRadius:"50%", background:c.border, display:"flex", alignItems:"center", justifyContent:"center", fontSize:8, fontWeight:700 }}>{c.icon}</span>
+              <span>{w.msg}</span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  // MAIN VISUALIZER
+  function PalletVisualizer({ layers, activeLayer, onLayerClick, res, palletType }) {
+    if (!res || !layers.length) return (
+      <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:14 }}>
+        <div style={{ fontSize:60, opacity:0.1 }}>&#128666;</div>
+        <div style={{ fontSize:13, color:"#8fa0bc", textAlign:"center", lineHeight:1.8 }}>Enter carton quantities<br/>to see your pallet build</div>
+      </div>
+    );
+
+    const cl = Math.min(activeLayer, layers.length - 1);
+    const layer = layers[cl];
+    const rects = getRectsForLayer(layer);
+    const sku = layer.sku;
+    const ac = ACCENT[sku.item];
+
+    const CW = 320, CH = 250;
+    const maxX = Math.max(PL, res.effectiveL);
+    const maxY = Math.max(PW, res.effectiveW);
+    const scale = Math.min(CW / maxX, CH / maxY) * 0.86;
+    const pW = PL*scale, pH = PW*scale;
+    const cW = maxX*scale, cH = maxY*scale;
+    const ox = (CW - cW) / 2, oy = (CH - cH) / 2;
+
+    return (
+      <div style={{ flex:1, display:"flex", flexDirection:"column", padding:"20px 24px", gap:16, overflowY:"auto" }}>
+        <div>
+          <div style={{ fontSize:10, fontWeight:600, color:"#8fa0bc", letterSpacing:"0.12em", marginBottom:8 }}>LAYERS</div>
+          <div style={{ display:"flex", gap:5, flexWrap:"wrap" }}>
+            {layers.map((l, i) => {
+              const lac = ACCENT[l.sku.item];
+              const isActive = i === cl;
+              return (
+                <button key={i} onClick={() => onLayerClick(i)} style={{
+                  padding:"4px 10px", borderRadius:20, fontSize:10, fontFamily:"inherit",
+                  cursor:"pointer", fontWeight:isActive ? 600 : 400, border:"none",
+                  background: isActive ? lac.primary : lac.light,
+                  color: isActive ? "#fff" : lac.primary,
+                  transition:"all 0.15s",
+                  boxShadow: isActive ? "0 2px 8px " + lac.primary + "50" : "none",
+                }}>
+                  L{i+1} {l.sku.size}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div>
+          <div style={{ fontSize:10, fontWeight:600, color:"#8fa0bc", letterSpacing:"0.12em", marginBottom:8 }}>
+            TOP-DOWN - LAYER {cl+1} - {sku.item} {sku.size}
+            {layer.pattern && <span style={{ fontWeight:400, color:"#a0aec0" }}> ({layer.pattern.label})</span>}
+          </div>
+          <div style={{ position:"relative", width:CW, height:CH }}>
+            {res.hasOverhang && (
+              <div style={{ position:"absolute", left:ox, top:oy, width:res.effectiveL*scale, height:res.effectiveW*scale, background:"#fff3cd18", border:"1.5px dashed #f5a623", borderRadius:3 }} />
+            )}
+            <div style={{ position:"absolute", left:ox, top:oy, width:pW, height:pH, background:"#f5f7fb", border:"2px solid #d0d8ec", borderRadius:3, overflow:"hidden" }}>
+              {[0.33, 0.66].map(p => <div key={p} style={{ position:"absolute", left:0, right:0, top:(p*100)+"%", height:1, background:"#e4e8f4" }} />)}
+              {[0.33, 0.66].map(p => <div key={p} style={{ position:"absolute", top:0, bottom:0, left:(p*100)+"%", width:1, background:"#e4e8f4" }} />)}
+            </div>
+            {rects.map((r, i) => {
+              const px = ox + r.x*scale, py = oy + r.y*scale;
+              const rw = r.w*scale, rh = r.h*scale;
+              const oh = (r.x + r.w > PL) || (r.y + r.h > PW);
+              return (
+                <div key={i} style={{
+                  position:"absolute", left:px, top:py, width:rw, height:rh,
+                  background: oh ? "#fff3cd" : r.tucked ? ac.primary + "22" : ac.light,
+                  border:"2px " + (r.tucked ? "dashed" : "solid") + " " + (oh ? "#f5a623" : ac.primary),
+                  borderRadius:2, display:"flex", flexDirection:"column",
+                  alignItems:"center", justifyContent:"center", gap:1,
+                  fontSize:Math.max(7, Math.min(10, scale*1.8)),
+                  color: oh ? "#d4820a" : ac.primary, fontWeight:600, overflow:"hidden",
+                }}>
+                  {rw > 20 && rh > 12 ? (r.w + "x" + r.h + '"') : ""}
+                  {r.tucked && rw > 22 && rh > 20 ? <span style={{ fontSize:Math.max(6, scale*1.2), opacity:0.6 }}>TUCKED</span> : ""}
+                </div>
+              );
+            })}
+            <div style={{ position:"absolute", left:ox, top:oy+pH+5, width:pW, textAlign:"center", fontSize:9, color:"#8fa0bc" }}>{PL}"</div>
+            <div style={{ position:"absolute", left:ox+pW+5, top:oy, height:pH, display:"flex", alignItems:"center" }}>
+              <span style={{ fontSize:9, color:"#8fa0bc", writingMode:"vertical-rl" }}>{PW}"</span>
+            </div>
+            {res.effectiveL > PL && <div style={{ position:"absolute", left:ox+pW, top:oy+pH+5, fontSize:9, color:"#f5a623", fontWeight:600 }}>+{(res.effectiveL-PL).toFixed(1)}"</div>}
+            {res.effectiveW > PW && <div style={{ position:"absolute", left:ox, top:oy+pH+16, fontSize:9, color:"#f5a623", fontWeight:600 }}>+{(res.effectiveW-PW).toFixed(1)}" W</div>}
+          </div>
+          {sku.item === "Vinyl Q-Top" && layer.pattern && layer.pattern.rects.some(r => r.tucked) && (
+            <div style={{ marginTop:7, display:"flex", gap:12 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                <div style={{ width:12, height:9, background:ac.light, border:"1.5px solid " + ac.primary, borderRadius:1 }} />
+                <span style={{ fontSize:9, color:"#5a6a88" }}>Vertical</span>
+              </div>
+              <div style={{ display:"flex", alignItems:"center", gap:5 }}>
+                <div style={{ width:9, height:12, background:ac.primary + "22", border:"1.5px dashed " + ac.primary, borderRadius:1 }} />
+                <span style={{ fontSize:9, color:"#5a6a88" }}>Horizontal (tucked)</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div>
+          <div style={{ fontSize:10, fontWeight:600, color:"#8fa0bc", letterSpacing:"0.12em", marginBottom:8 }}>SIDE ELEVATION</div>
+          <SideElevation layers={layers} activeLayer={cl} res={res} palletType={palletType} onLayerClick={onLayerClick} />
+        </div>
+      </div>
+    );
+  }
+
+  // APP
+  const grouped = SKU_DATA.reduce((acc, s) => { (acc[s.item] = acc[s.item] || []).push(s); return acc; }, {});
+
+  function App() {
+    const [qtys, setQtys]                         = useState({});
+    const [palletType, setPalletType]             = useState(PALLET_TYPES[0]);
+    const [step, setStep]                         = useState(0);
+    const [activeLayer, setActiveLayer]           = useState(0);
+    const [showOverhang, setShowOverhang]         = useState(true);
+    const [selectedPatterns, setSelectedPatterns] = useState({});
+
+    const setQty = (id, v) => {
+      const val = Math.max(0, parseInt(v) || 0);
+      setQtys(p => ({ ...p, [id]: val }));
+      if (val > 0 && !selectedPatterns[id]) {
+        const patterns = generatePatterns(SKU_DATA.find(s => s.id === id));
+        if (patterns.length) setSelectedPatterns(p => ({ ...p, [id]: patterns[0].id }));
+      }
+    };
+
+    const selectPattern = (skuId, patternId) => {
+      setSelectedPatterns(p => ({ ...p, [skuId]: patternId }));
+      setActiveLayer(0);
+    };
+
+    const totalCartons = SKU_DATA.reduce((s, sk) => s + (qtys[sk.id] || 0), 0);
+    const layers   = totalCartons > 0 ? buildLayers(qtys, selectedPatterns) : [];
+    const res      = totalCartons > 0 ? calculate(qtys, palletType, selectedPatterns) : null;
+    const warnings = res ? getWarnings(res, layers) : [];
+    const hasErrors = warnings.some(w => w.level === "error");
+    const steps = ["Pallet Type", "SKU Quantities"];
+
+    return (
+      <div style={{ display:"flex", height:"100vh", background:"#eef1f8", fontFamily:"'DM Sans',sans-serif" }}>
+
+        <div style={{ width:490, display:"flex", flexDirection:"column", background:"#fff", boxShadow:"2px 0 20px #1a23400e", zIndex:2, overflow:"hidden" }}>
+
+          <div style={{ padding:"18px 24px", borderBottom:"1px solid #eef1f8", display:"flex", alignItems:"center", gap:12 }}>
+            <div style={{ width:34, height:34, background:"linear-gradient(135deg,#1782f5,#0d5fc9)", borderRadius:10, display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, boxShadow:"0 4px 12px #1782f540" }}>&#128666;</div>
+            <div>
+              <div style={{ fontSize:14, fontWeight:700, color:"#1a2340", fontFamily:"'Space Grotesk',sans-serif" }}>SMT Pallet Calculator</div>
+              <div style={{ fontSize:10, color:"#8fa0bc", marginTop:1 }}>Mixed SKU - Pallet Optimizer</div>
+            </div>
+            <div style={{ marginLeft:"auto", display:"flex", gap:8, alignItems:"center" }}>
+              <PrintButton qtys={qtys} res={res} layers={layers} selectedPatterns={selectedPatterns} palletType={palletType} />
+              {totalCartons > 0 && (
+                <button onClick={() => { setQtys({}); setSelectedPatterns({}); setActiveLayer(0); }} style={{ background:"none", border:"1.5px solid #e0e5f0", color:"#8fa0bc", padding:"4px 11px", borderRadius:6, cursor:"pointer", fontSize:11, fontFamily:"inherit", fontWeight:500 }}>Reset</button>
+              )}
+            </div>
+          </div>
+
+          <div style={{ display:"flex", padding:"0 24px", borderBottom:"1px solid #eef1f8" }}>
+            {steps.map((s, i) => (
+              <button key={i} onClick={() => setStep(i)} style={{
+                padding:"12px 0", marginRight:20, background:"none", border:"none",
+                fontSize:12, fontWeight:step===i ? 600 : 400, color:step===i ? "#1782f5" : "#8fa0bc",
+                cursor:"pointer", fontFamily:"inherit",
+                borderBottom:step===i ? "2px solid #1782f5" : "2px solid transparent", transition:"all 0.15s",
+              }}>
+                <span style={{ display:"inline-flex", alignItems:"center", gap:6 }}>
+                  <span style={{ width:16, height:16, borderRadius:"50%", background:step===i ? "#1782f5" : "#e4e8f4", color:step===i ? "#fff" : "#8fa0bc", fontSize:9, display:"inline-flex", alignItems:"center", justifyContent:"center", fontWeight:700 }}>{i+1}</span>
+                  {s}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          <div style={{ flex:1, overflowY:"auto", padding:"20px 24px" }}>
+
+            {step === 0 && (
+              <div style={{ animation:"fadeUp 0.2s ease" }}>
+                <div style={{ fontSize:13, color:"#3a4a6b", lineHeight:1.7, marginBottom:20 }}>
+                  Select the type of pallet for this shipment.
+                </div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+                  {PALLET_TYPES.map(pt => {
+                    const active = palletType.id === pt.id;
+                    return (
+                      <button key={pt.id} onClick={() => setPalletType(pt)} style={{
+                        background: active ? "#e8f2ff" : "#f8f9fc",
+                        border:"2px solid " + (active ? "#1782f5" : "#e0e5f0"),
+                        borderRadius:12, padding:"16px 14px", cursor:"pointer",
+                        textAlign:"left", fontFamily:"inherit", transition:"all 0.2s",
+                        boxShadow: active ? "0 4px 16px #1782f520" : "none",
+                      }}>
+                        <div style={{ fontSize:13, fontWeight:700, color:active ? "#1782f5" : "#1a2340", marginBottom:4, fontFamily:"'Space Grotesk',sans-serif" }}>{pt.label}</div>
+                        <div style={{ fontSize:11, color:active ? "#1782f5" : "#8fa0bc" }}>{pt.height}" deck height</div>
+                        {active && <div style={{ marginTop:7, display:"inline-block", background:"#1782f5", color:"#fff", fontSize:9, padding:"2px 7px", borderRadius:10, letterSpacing:"0.06em", fontWeight:600 }}>SELECTED</div>}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{ marginTop:24, padding:"14px 16px", background:"#f8f9fd", border:"1px solid #e8edf6", borderRadius:10 }}>
+                  <div style={{ fontSize:10, fontWeight:700, color:"#8fa0bc", letterSpacing:"0.1em", marginBottom:10 }}>ACTIVE SHIPPING CONSTRAINTS</div>
+                  {[
+                    ["Max height",         CONSTRAINTS.MAX_HEIGHT + '" (' + CONSTRAINTS.WARN_HEIGHT + '" soft warning)'],
+                    ["Max overhang",       CONSTRAINTS.MAX_OVERHANG + '" per side (LTL standard)'],
+                    ["Max gross weight",   CONSTRAINTS.MAX_GROSS_WEIGHT.toLocaleString() + " lb per pallet"],
+                    ["Min cartons/layer",  CONSTRAINTS.MIN_CPL + " (patterns below this are hidden)"],
+                    ["Min pallet coverage", Math.round(CONSTRAINTS.MIN_COVERAGE*100) + "% of footprint"],
+                    ["Layer stability flag", CONSTRAINTS.MAX_LAYERS + " layers"],
+                  ].map(([k, v]) => (
+                    <div key={k} style={{ display:"flex", justifyContent:"space-between", fontSize:11, marginBottom:5 }}>
+                      <span style={{ color:"#5a6a88" }}>{k}</span>
+                      <span style={{ color:"#1a2340", fontWeight:600 }}>{v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {step === 1 && (
+              <div style={{ animation:"fadeUp 0.2s ease" }}>
+                <div style={{ fontSize:13, color:"#3a4a6b", lineHeight:1.7, marginBottom:14 }}>
+                  Enter carton quantities. Select a layer pattern - the visualizer updates instantly.
+                </div>
+
+                <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:20, padding:"9px 13px", background:"#f8f9fd", borderRadius:10, border:"1px solid #e8edf6" }}>
+                  <span style={{ fontSize:11, color:"#5a6a88", fontWeight:600 }}>Layer Pattern:</span>
+                  <div style={{ display:"flex", borderRadius:20, overflow:"hidden", border:"1.5px solid #e0e5f0", background:"#fff" }}>
+                    {[{id:true, label:"Overhang"}, {id:false, label:"Aligned"}].map(opt => (
+                      <button key={opt.label} onClick={() => setShowOverhang(opt.id)} style={{
+                        padding:"5px 15px", border:"none", cursor:"pointer", fontSize:11, fontFamily:"inherit",
+                        fontWeight:showOverhang === opt.id ? 600 : 400,
+                        background:showOverhang === opt.id ? "#1782f5" : "transparent",
+                        color:showOverhang === opt.id ? "#fff" : "#8fa0bc",
+                        transition:"all 0.15s",
+                      }}>{opt.label}</button>
+                    ))}
+                  </div>
+                  <span style={{ fontSize:10, color:"#8fa0bc" }}>{showOverhang ? "Max " + CONSTRAINTS.MAX_OVERHANG + '" per side' : "Zero-overhang only"}</span>
+                </div>
+
+                {Object.entries(grouped).map(([item, skus]) => {
+                  const ac = ACCENT[item];
+                  return (
+                    <div key={item} style={{ marginBottom:22 }}>
+                      <div style={{ display:"flex", alignItems:"center", gap:7, marginBottom:9 }}>
+                        <div style={{ width:7, height:7, borderRadius:2, background:ac.primary }} />
+                        <span style={{ fontSize:11, color:ac.primary, fontWeight:700, letterSpacing:"0.1em" }}>{item.toUpperCase()}</span>
+                      </div>
+                      <div style={{ borderRadius:10, border:"1px solid " + ac.mid, overflow:"hidden" }}>
+                        {skus.map((sku, i) => {
+                          const qty = qtys[sku.id] || 0;
+                          const active = qty > 0;
+                          const all = generatePatterns(sku);
+                          const selId = selectedPatterns[sku.id] || (all[0] && all[0].id);
+                          const selP = all.find(p => p.id === selId);
+                          return (
+                            <div key={sku.id}>
+                              <div style={{
+                                display:"grid", gridTemplateColumns:"1fr 32px 58px 32px",
+                                alignItems:"center", gap:7, padding:"10px 13px",
+                                background: active ? ac.light : "#fff",
+                                borderTop: i > 0 ? "1px solid " + (active ? ac.mid : "#f0f2f8") : "none",
+                                transition:"background 0.2s",
+                              }}>
+                                <div>
+                                  <div style={{ display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+                                    <span style={{ fontSize:13, fontWeight:active ? 600 : 400, color:active ? "#1a2340" : "#5a6a88" }}>{sku.size}</span>
+                                    {active && selP && (
+                                      <span style={{ fontSize:9, color:selP.aligned ? "#1a9e6a" : "#d4820a", fontWeight:600, background:selP.aligned ? "#e6f9f2" : "#fff4e5", padding:"1px 5px", borderRadius:8, border:"1px solid " + (selP.aligned ? "#a8e8cd" : "#fcd49a") }}>
+                                        {selP.aligned ? "aligned" : ("+" + (selP.ohL > 0 ? selP.ohL + '"L' : "") + (selP.ohW > 0 ? " " + selP.ohW.toFixed(1) + '"W' : ""))}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div style={{ fontSize:10, color:"#8fa0bc", marginTop:2 }}>{sku.L}x{sku.W}x{sku.H}" - {sku.weight} lb - max {sku.cpp}/plt</div>
+                                  {active && selP && <div style={{ fontSize:10, color:ac.primary, marginTop:1 }}>{selP.cpl}/layer - {selP.label}</div>}
+                                </div>
+                                <button onClick={() => setQty(sku.id, qty-1)} style={{ width:29, height:29, borderRadius:7, background:"#f0f2f8", border:"1.5px solid #e0e5f0", color:"#5a6a88", cursor:"pointer", fontSize:17, display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"inherit" }}>-</button>
+                                <input type="number" min={0} value={qty || ""} placeholder="0"
+                                  onChange={e => setQty(sku.id, e.target.value)}
+                                  style={{ width:"100%", textAlign:"center", background:active ? "#fff" : "#f8f9fc", border:"2px solid " + (active ? ac.primary : "#e0e5f0"), color:active ? "#1a2340" : "#8fa0bc", borderRadius:7, padding:"5px", fontSize:13, fontFamily:"inherit", outline:"none", fontWeight:600, transition:"border-color 0.2s" }} />
+                                <button onClick={() => setQty(sku.id, qty+1)} style={{ width:29, height:29, borderRadius:7, background:active ? ac.primary : "#f0f2f8", border:"1.5px solid " + (active ? ac.primary : "#e0e5f0"), color:active ? "#fff" : "#5a6a88", cursor:"pointer", fontSize:17, display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"inherit" }}>+</button>
+                              </div>
+                              {active && (
+                                <PatternSelector sku={sku} selectedPatternId={selId} onSelect={selectPattern} showOverhang={showOverhang} />
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div style={{ padding:"13px 24px", borderTop:"1px solid #eef1f8", display:"flex", gap:10, alignItems:"center" }}>
+            {step > 0 && (
+              <button onClick={() => setStep(s => s-1)} style={{ padding:"8px 18px", borderRadius:50, background:"none", border:"2px solid #e0e5f0", color:"#5a6a88", cursor:"pointer", fontSize:12, fontFamily:"inherit", fontWeight:500 }}>Previous</button>
+            )}
+            {step < steps.length - 1 && (
+              <button onClick={() => setStep(s => s+1)} style={{ padding:"8px 22px", borderRadius:50, background:"#1782f5", border:"none", color:"#fff", cursor:"pointer", fontSize:12, fontFamily:"inherit", fontWeight:600, boxShadow:"0 4px 14px #1782f540", marginLeft:"auto" }}>Next Step</button>
+            )}
+            {step === steps.length - 1 && totalCartons > 0 && res && (
+              <div style={{ marginLeft:"auto", display:"flex", alignItems:"center", gap:8 }}>
+                {hasErrors && <span style={{ fontSize:11, color:"#dc2626", fontWeight:600 }}>Constraint violation</span>}
+                <span style={{ fontSize:12, color:hasErrors ? "#dc2626" : "#1782f5", fontWeight:600 }}>{res.pallets} pallet{res.pallets !== 1 ? "s" : ""} - {res.grossWeight.toLocaleString()} lb</span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
+          {res && (
+            <div style={{ padding:"11px 24px", background:"#fff", borderBottom:"1px solid #e8edf6", display:"flex", gap:18, alignItems:"center", flexWrap:"wrap" }}>
+              {[
+                { label:"PALLETS",       val:res.pallets,                               alert:false },
+                { label:"GROSS WEIGHT",  val:res.grossWeight.toLocaleString() + " lb",  alert:res.grossWeight > CONSTRAINTS.MAX_GROSS_WEIGHT },
+                { label:"FOOTPRINT",     val:res.effectiveL + '" x ' + res.effectiveW + '"', alert:false },
+                { label:"TOTAL HEIGHT",  val:res.totalH + '"',                          alert:res.totalH > CONSTRAINTS.MAX_HEIGHT },
+                { label:"FILL",          val:Math.round(res.fillPct*100) + "%",         alert:false },
+              ].map(item => (
+                <div key={item.label} style={{ display:"flex", flexDirection:"column", gap:1 }}>
+                  <div style={{ fontSize:9, color:"#8fa0bc", fontWeight:700, letterSpacing:"0.12em" }}>{item.label}</div>
+                  <div style={{ fontSize:15, fontWeight:700, color:item.alert ? "#dc2626" : "#1a2340", fontFamily:"'Space Grotesk',sans-serif" }}>{item.val}</div>
+                </div>
+              ))}
+              {warnings.length > 0 && (
+                <div style={{ marginLeft:"auto", background:hasErrors ? "#fef2f2" : "#fffbeb", border:"1.5px solid " + (hasErrors ? "#fca5a5" : "#fcd49a"), borderRadius:8, padding:"5px 11px", fontSize:10, color:hasErrors ? "#dc2626" : "#d97706", fontWeight:600 }}>
+                  {warnings.length} {warnings.length === 1 ? "issue" : "issues"}
+                </div>
+              )}
+            </div>
+          )}
+
+          {warnings.length > 0 && <WarningBanner warnings={warnings} />}
+
+          <div style={{ flex:1, overflowY:"auto", display:"flex", flexDirection:"column" }}>
+            <PalletVisualizer
+              layers={layers}
+              activeLayer={Math.min(activeLayer, Math.max(0, layers.length-1))}
+              onLayerClick={setActiveLayer}
+              res={res}
+              palletType={palletType}
+            />
+          </div>
+
+          {res && (
+            <div style={{ padding:"10px 24px", background:"#fff", borderTop:"1px solid #e8edf6", display:"flex", gap:7, flexWrap:"wrap" }}>
+              {SKU_DATA.filter(s => (qtys[s.id] || 0) > 0).map(sku => {
+                const ac = ACCENT[sku.item];
+                const all = generatePatterns(sku);
+                const selP = all.find(p => p.id === selectedPatterns[sku.id]) || all[0];
+                return (
+                  <div key={sku.id} style={{ display:"flex", alignItems:"center", gap:6, background:ac.light, border:"1px solid " + ac.mid, borderRadius:8, padding:"5px 10px" }}>
+                    <div style={{ width:6, height:6, borderRadius:2, background:ac.primary, flexShrink:0 }} />
+                    <span style={{ fontSize:11, fontWeight:600, color:ac.primary }}>{sku.item}</span>
+                    <span style={{ fontSize:11, color:"#5a6a88" }}>{sku.size}</span>
+                    <span style={{ fontSize:11, fontWeight:700, color:"#1a2340" }}>{qtys[sku.id]} ctns</span>
+                    {selP && <span style={{ fontSize:10, color:"#8fa0bc" }}>{selP.cpl}/layer</span>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+      </div>
+    );
+  }
+
+
+
+  // ---- PDF / PULL SHEET ----
+  const LOGO_URI = "data:image/png;base64,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";
+
+  function buildSVGDiagram(pattern, sku, px) {
+    // Returns an SVG string for the top-down pattern diagram
+    const PL2 = 48, PW2 = 40;
+    const maxX = Math.max(PL2, ...pattern.rects.map(r => r.x + r.w));
+    const maxY = Math.max(PW2, ...pattern.rects.map(r => r.y + r.h));
+    const s = (px - 6) / Math.max(maxX, maxY);
+    const pw = PL2 * s, ph = PW2 * s;
+
+    const COLORS = {
+      "Vinyl Q-Top":    { fill:"#e8f2ff", stroke:"#1782f5" },
+      "Fabric D-Skirt": { fill:"#f0ebff", stroke:"#7c4dbd" },
+      "D-Pails":        { fill:"#fff4e5", stroke:"#e07b0a" },
+    };
+    const col = COLORS[sku.item] || { fill:"#eee", stroke:"#999" };
+
+    let rects = "";
+    pattern.rects.forEach(function(r) {
+      const oh = (r.x + r.w > PL2) || (r.y + r.h > PW2);
+      const fill   = oh ? "#fff3cd" : col.fill;
+      const stroke = oh ? "#f5a623" : col.stroke;
+      const dash   = r.tucked ? 'stroke-dasharray="3,2"' : "";
+      rects += '<rect x="' + (3 + r.x*s) + '" y="' + (3 + r.y*s) + '" width="' + (r.w*s) + '" height="' + (r.h*s) + '" fill="' + fill + '" stroke="' + stroke + '" stroke-width="1.2" rx="1" ' + dash + '/>';
+    });
+
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="' + px + '" height="' + px + '">'
+      + '<rect x="3" y="3" width="' + pw + '" height="' + ph + '" fill="#f5f7fb" stroke="#d0d8ec" stroke-width="1.5" rx="2"/>'
+      + rects
+      + '<text x="' + (3 + pw/2) + '" y="' + (px - 2) + '" text-anchor="middle" font-size="7" fill="#8fa0bc" font-family="Arial,sans-serif">' + PL2 + '"x' + PW2 + '"</text>'
+      + '</svg>';
+  }
+
+  function svgToDataURI(svgStr) {
+    return "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgStr)));
+  }
+
+  function generatePullSheet(qtys, res, layers, selectedPatterns, palletType) {
+    if (!res) return;
+
+    const date = new Date().toLocaleDateString("en-US", { year:"numeric", month:"long", day:"numeric" });
+    const activeSKUs = SKU_DATA.filter(s => (qtys[s.id] || 0) > 0);
+
+    // Build pattern diagram data URIs
+    const diagrams = {};
+    activeSKUs.forEach(function(sku) {
+      const all = generatePatterns(sku);
+      const selP = all.find(p => p.id === selectedPatterns[sku.id]) || all[0];
+      if (selP) diagrams[sku.id] = { uri: svgToDataURI(buildSVGDiagram(selP, sku, 90)), pattern: selP };
+    });
+
+    // SKU rows HTML
+    let skuRows = "";
+    activeSKUs.forEach(function(sku, idx) {
+      const qty    = qtys[sku.id];
+      const d      = diagrams[sku.id];
+      const selP   = d ? d.pattern : null;
+      const ohText = selP && (selP.ohL > 0 || selP.ohW > 0)
+        ? (selP.ohL > 0 ? "+" + selP.ohL + '" L ' : "") + (selP.ohW > 0 ? "+" + selP.ohW.toFixed(1) + '" W' : "")
+        : "None";
+      const bg = idx % 2 === 0 ? "#fff" : "#f8f9fc";
+      const itemColors = { "Vinyl Q-Top":"#1782f5", "Fabric D-Skirt":"#7c4dbd", "D-Pails":"#e07b0a" };
+      const col = itemColors[sku.item] || "#333";
+      const layers_count = selP ? Math.ceil(qty / selP.cpl) : "-";
+      skuRows += '<tr style="background:' + bg + ';">'
+        + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8;">'
+        +   '<span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + col + ';margin-right:6px;vertical-align:middle;"></span>'
+        +   '<strong style="color:#1a2340;">' + sku.item + '</strong>'
+        + '</td>'
+        + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8; color:#1a2340; font-weight:600;">' + sku.size + '</td>'
+        + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8; color:#1a2340; font-weight:700; text-align:center;">' + qty + '</td>'
+        + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8; color:#5a6a88; text-align:center;">' + (selP ? selP.cpl : "-") + '/layer</td>'
+        + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8; color:#5a6a88; text-align:center;">' + layers_count + ' layer' + (layers_count !== 1 ? "s" : "") + '</td>'
+        + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8; color:#5a6a88; text-align:center;">' + (selP ? selP.label : "-") + '</td>'
+        + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8; color:' + (ohText === "None" ? "#1a9e6a" : "#d4820a") + '; text-align:center; font-weight:600;">' + ohText + '</td>'
+        + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8; text-align:center;">'
+        +   (d ? '<img src="' + d.uri + '" width="60" height="60" style="display:block;margin:0 auto;" />' : "-")
+        + '</td>'
+        + '</tr>';
+    });
+
+    const heightColor = res.totalH > 65 ? "#dc2626" : res.totalH > 60 ? "#d97706" : "#1a2340";
+    const weightColor = res.grossWeight > 2500 ? "#dc2626" : res.grossWeight > 2200 ? "#d97706" : "#1a2340";
+
+    const html = '<!DOCTYPE html><html><head><meta charset="UTF-8">'
+      + '<title>SMT Pallet Pull Sheet</title>'
+      + '<style>'
+      + '* { box-sizing:border-box; margin:0; padding:0; }'
+      + 'body { font-family: Arial, Helvetica, sans-serif; background:#fff; color:#1a2340; font-size:12px; }'
+      + '@media print { body { margin:0; } .no-print { display:none !important; } @page { margin: 0.5in; size: letter; } }'
+      + 'table { border-collapse: collapse; width:100%; }'
+      + 'th { background:#1a2340; color:#fff; padding:8px 10px; text-align:left; font-size:10px; letter-spacing:0.08em; text-transform:uppercase; }'
+      + 'th.center { text-align:center; }'
+      + '</style>'
+      + '</head><body>'
+      + '<div style="max-width:780px; margin:0 auto; padding:24px;">'
+
+      // Header
+      + '<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:20px; padding-bottom:16px; border-bottom:2px solid #1a2340;">'
+      +   '<img src="' + LOGO_URI + '" height="56" style="object-fit:contain;" />'
+      +   '<div style="text-align:right;">'
+      +     '<div style="font-size:20px; font-weight:700; color:#1a2340; letter-spacing:0.04em;">PALLET PULL SHEET</div>'
+      +     '<div style="font-size:12px; color:#8fa0bc; margin-top:4px;">' + date + '</div>'
+      +     '<div style="font-size:11px; color:#8fa0bc; margin-top:2px;">Pallet type: ' + palletType.label + ' (' + palletType.height + '" deck)</div>'
+      +   '</div>'
+      + '</div>'
+
+      // Summary cards
+      + '<div style="display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin-bottom:20px;">'
+      + [
+          ["PALLETS",       res.pallets,                                      "#1a2340"],
+          ["TOTAL CARTONS", res.totalCartons,                                 "#1a2340"],
+          ["GROSS WEIGHT",  res.grossWeight.toLocaleString() + " lb",         weightColor],
+          ["FOOTPRINT",     res.effectiveL + '" x ' + res.effectiveW + '"',   "#1a2340"],
+          ["TOTAL HEIGHT",  res.totalH + '"',                                  heightColor],
+        ].map(function(item) {
+          return '<div style="background:#f8f9fc; border:1px solid #e0e5f0; border-radius:8px; padding:10px 12px;">'
+            + '<div style="font-size:9px; color:#8fa0bc; font-weight:700; letter-spacing:0.1em; margin-bottom:4px;">' + item[0] + '</div>'
+            + '<div style="font-size:18px; font-weight:700; color:' + item[2] + ';">' + item[1] + '</div>'
+            + '</div>';
+        }).join("")
+      + '</div>'
+
+      // SKU table
+      + '<table>'
+      + '<thead><tr>'
+      + '<th>Item</th><th>Size</th><th class="center">Qty (Ctns)</th><th class="center">CPL</th><th class="center">Layers</th><th>Pattern</th><th class="center">Overhang</th><th class="center">Diagram</th>'
+      + '</tr></thead>'
+      + '<tbody>' + skuRows + '</tbody>'
+      + '</table>'
+
+      // Footer
+      + '<div style="margin-top:24px; padding-top:12px; border-top:1px solid #e0e5f0; display:flex; justify-content:space-between; align-items:center;">'
+      +   '<div style="font-size:10px; color:#8fa0bc;">SMT Expo - a division of Glenmore Industries</div>'
+      +   '<div style="font-size:10px; color:#8fa0bc;">Generated ' + date + '</div>'
+      + '</div>'
+
+      + '</div>'
+
+      // Print button (hidden on print)
+      + '<div class="no-print" style="text-align:center; padding:20px;">'
+      +   '<button onclick="window.print()" style="background:#1782f5; color:#fff; border:none; padding:10px 28px; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit;">Print / Save as PDF</button>'
+      +   '<button onclick="window.close()" style="background:none; border:1.5px solid #e0e5f0; color:#5a6a88; padding:10px 20px; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit; margin-left:10px;">Close</button>'
+      + '</div>'
+      + '</body></html>';
+
+    const win = window.open("", "_blank", "width=860,height=900");
+    win.document.write(html);
+    win.document.close();
+  }
+
+  function PrintButton({ qtys, res, layers, selectedPatterns, palletType }) {
+    if (!res) return null;
+    return (
+      <button
+        onClick={() => generatePullSheet(qtys, res, layers, selectedPatterns, palletType)}
+        style={{
+          display:"flex", alignItems:"center", gap:7,
+          background:"#1a2340", border:"none", color:"#fff",
+          padding:"6px 16px", borderRadius:7, cursor:"pointer",
+          fontSize:11, fontFamily:"inherit", fontWeight:600,
+          boxShadow:"0 2px 8px #1a234030",
+          transition:"opacity 0.15s",
+        }}
+      >
+        <span style={{ fontSize:13 }}>&#128438;</span>
+        Pull Sheet
+      </button>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
