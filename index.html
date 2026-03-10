@@ -272,7 +272,9 @@
           if (bestFit && bestFit.rects.length > 0) {
             const cartonsThisSlot = Math.min(remaining[sku.id], bestFit.rects.length);
             const rects = bestFit.rects.slice(0, cartonsThisSlot);
-            layerSlots.push({ sku, pattern, rects, cartonsThisSlot });
+            // Gap-fill rects come from bestFit, not the primary pattern, so store null
+            // to avoid false overhang warnings from unrelated pattern metadata.
+            layerSlots.push({ sku, pattern: null, rects, cartonsThisSlot });
             usedRects = usedRects.concat(rects);
             remaining[sku.id] -= cartonsThisSlot;
             skusOnLayer++;
@@ -1230,7 +1232,7 @@
       const bg = idx % 2 === 0 ? "#fff" : "#f8f9fc";
       const itemColors = { "Vinyl Q-Top":"#1782f5", "Fabric D-Skirt":"#7c4dbd", "D-Pails":"#e07b0a" };
       const col = itemColors[sku.item] || "#333";
-      const layers_count = selP ? Math.ceil(qty / selP.cpl) : "-";
+      const layers_count = layers.filter(l => l.slots.some(s => s.sku.id === sku.id)).length;
       skuRows += '<tr style="background:' + bg + ';">'
         + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8;"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + col + ';margin-right:6px;vertical-align:middle;"></span><strong style="color:#1a2340;">' + sku.item + '</strong></td>'
         + '<td style="padding:8px 10px; border-bottom:1px solid #eef1f8; color:#1a2340; font-weight:600;">' + sku.size + '</td>'
