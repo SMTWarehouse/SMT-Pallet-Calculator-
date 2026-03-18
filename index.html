@@ -224,7 +224,7 @@
     return best;
   }
 
-  function buildLayers(qtys, selectedPatterns) {
+  function buildLayers(qtys, selectedPatterns, skuOrder = []) {
     const remaining = {};
     const skuList = [];
     SKU_DATA.forEach(sku => {
@@ -239,12 +239,22 @@
       skuList.push({ sku, patternA, patternB, cpl: patternA ? patternA.cpl : 1, selectedId });
     });
 
+    // Sort once by user input order: first entered = bottom/base layer.
+    // SKUs not in skuOrder fall to the end.
+    if (skuOrder.length > 0) {
+      skuList.sort((a, b) => {
+        const ai = skuOrder.indexOf(a.sku.id);
+        const bi = skuOrder.indexOf(b.sku.id);
+        return (ai === -1 ? Infinity : ai) - (bi === -1 ? Infinity : bi);
+      });
+    }
+
     const layers = [];
     while (skuList.some(s => remaining[s.sku.id] > 0)) {
       const layerIdx = layers.length;
       const isEvenLayer = layerIdx % 2 === 0;
       const active = skuList.filter(s => remaining[s.sku.id] > 0);
-      active.sort((a,b) => b.sku.H - a.sku.H);
+      // Layer order follows skuOrder set above; no re-sort by height.
       const layerSlots = [];
       let usedRects = [];
       let skusOnLayer = 0;
@@ -297,7 +307,7 @@
   }
 
   // ─── CALCULATE ───────────────────────────────────────────────────────────────
-  function calculate(qtys, palletType, selectedPatterns) {
+  function calculate(qtys, palletType, selectedPatterns, skuOrder = []) {
     let totalFraction=0, cargoWeight=0, totalCartons=0;
     let effectiveL=PL, effectiveW=PW;
     const overhangItems = [];
@@ -310,7 +320,7 @@
       totalCartons  += qty;
     });
 
-    const builtLayers = buildLayers(qtys, selectedPatterns);
+    const builtLayers = buildLayers(qtys, selectedPatterns, skuOrder);
     let maxStackH = 0;
     builtLayers.forEach(layer => {
       maxStackH += layer.layerH;
@@ -1336,13 +1346,20 @@
     const [showOverhang, setShowOverhang]         = useState(true);
     const [selectedPatterns, setSelectedPatterns] = useState({});
     const [viewMode, setViewMode]                 = useState("2d"); // "2d" | "3d"
+    // Tracks the order SKUs are entered: first entered = base/bottom layer.
+    const [skuOrder, setSkuOrder]                 = useState([]);
 
     const setQty = (id, v) => {
       const val = Math.max(0, parseInt(v) || 0);
       setQtys(p => ({ ...p, [id]: val }));
-      if (val > 0 && !selectedPatterns[id]) {
-        const patterns = generatePatterns(SKU_DATA.find(s => s.id === id));
-        if (patterns.length) setSelectedPatterns(p => ({ ...p, [id]: patterns[0].id }));
+      if (val > 0) {
+        setSkuOrder(prev => prev.includes(id) ? prev : [...prev, id]);
+        if (!selectedPatterns[id]) {
+          const patterns = generatePatterns(SKU_DATA.find(s => s.id === id));
+          if (patterns.length) setSelectedPatterns(p => ({ ...p, [id]: patterns[0].id }));
+        }
+      } else {
+        setSkuOrder(prev => prev.filter(i => i !== id));
       }
     };
 
@@ -1352,8 +1369,8 @@
     };
 
     const totalCartons = SKU_DATA.reduce((s, sk) => s + (qtys[sk.id] || 0), 0);
-    const layers   = totalCartons > 0 ? buildLayers(qtys, selectedPatterns) : [];
-    const res      = totalCartons > 0 ? calculate(qtys, palletType, selectedPatterns) : null;
+    const layers   = totalCartons > 0 ? buildLayers(qtys, selectedPatterns, skuOrder) : [];
+    const res      = totalCartons > 0 ? calculate(qtys, palletType, selectedPatterns, skuOrder) : null;
     const warnings = res ? getWarnings(res, layers) : [];
     const hasErrors = warnings.some(w => w.level === "error");
     const steps = ["Pallet Type", "SKU Quantities"];
