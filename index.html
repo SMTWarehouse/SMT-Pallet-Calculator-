@@ -93,26 +93,22 @@
     }
 
     if (sku.item === "Vinyl Q-Top") {
-      // Only place as many vertical cartons as fit within PW without overhang.
-      // e.g. 24x8 (W=10.25): floor(40/10.25)=3, not 4 (4×10.25=41 > 40 would overhang).
-      const vCount = Math.min(4, Math.floor(PW / sku.W));
-
-      // Layer A: vCount V + 1H tucked on the RIGHT end
+      // Layer A: 4V + 1H tucked on the RIGHT end
       const tuckedA = [];
-      for (let i = 0; i < vCount; i++) tuckedA.push({ x:0, y:i*sku.W, w:sku.L, h:sku.W });
+      for (let i = 0; i < 4; i++) tuckedA.push({ x:0, y:i*sku.W, w:sku.L, h:sku.W });
       tuckedA.push({ x:sku.L, y:0, w:sku.W, h:sku.L, tucked:true });
-      addPattern(vCount + "V + 1H Tucked (Pinwheel A)", tuckedA, "confirmed", true);
+      addPattern("4V + 1H Tucked (Pinwheel A)", tuckedA, "confirmed", true);
 
-      // Layer B: mirror — vCount V on the RIGHT side + 1H tucked on the LEFT end
+      // Layer B: mirror — 4V on the RIGHT side + 1H tucked on the LEFT end
       const tuckedB = [];
       const offset = sku.W; // H carton is sku.W wide, so V cartons shift right by that
-      for (let i = 0; i < vCount; i++) tuckedB.push({ x:offset, y:i*sku.W, w:sku.L, h:sku.W });
+      for (let i = 0; i < 4; i++) tuckedB.push({ x:offset, y:i*sku.W, w:sku.L, h:sku.W });
       tuckedB.push({ x:0, y:0, w:sku.W, h:sku.L, tucked:true });
-      addPattern(vCount + "V + 1H Tucked (Pinwheel B)", tuckedB, "confirmed_b", true);
+      addPattern("4V + 1H Tucked (Pinwheel B)", tuckedB, "confirmed_b", true);
 
       const v4 = [];
-      for (let i = 0; i < vCount; i++) v4.push({ x:0, y:i*sku.W, w:sku.L, h:sku.W });
-      addPattern(vCount + " Vertical", v4, "4v", true);
+      for (let i = 0; i < 4; i++) v4.push({ x:0, y:i*sku.W, w:sku.L, h:sku.W });
+      addPattern("4 Vertical", v4, "4v", true);
       for (let rot = 0; rot < 2; rot++) {
         const cw = rot ? sku.W : sku.L, ch = rot ? sku.L : sku.W;
         for (let cols = 1; cols <= Math.ceil(PL/cw)+1; cols++)
